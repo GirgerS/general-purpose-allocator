@@ -120,9 +120,9 @@ bool TestNodeIntegrity(AllocationNode *node, int64_t black_nodes_count, int64_t 
     return true;
 }
 
-bool TestRBTIntegrity(AllocationNode *root) {
+void TestRBTIntegrity(AllocationNode *root) {
     if (!root) {
-        return true;
+        return;
     } 
 
     int64_t target = GetBlackNodesCountOfTheFirstLeaf(root);

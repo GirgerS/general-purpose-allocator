@@ -4,3 +4,4 @@
 *.rdi
 *.ilk
 *.o
+build/
