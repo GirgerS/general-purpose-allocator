@@ -84,12 +84,12 @@ void  PlatformFreeMemory(void *memory);
 #include "stdio.h"
 #include "assert.h"
 
+#if 1
 // nocommit: find a better place for this function
 static inline uint64_t HeapArenaGetNodeChecksum(AllocationNode *node) {
     AllocationNode test_node = *node;
     test_node.checksum = 0;
 
-    test_node.parent   = 0;
     test_node.left     = 0;
     test_node.right    = 0;
     test_node.previous = 0; 
@@ -102,6 +102,9 @@ static inline uint64_t HeapArenaGetNodeChecksum(AllocationNode *node) {
     uint64_t  checksum64 = MeowU64From(checksum, 0);
     return checksum64;
 }
+#else
+    #define HeapArenaGetNodeChecksum(...) 0
+#endif
 
 // current source: https://en.wikipedia.org/wiki/Red%E2%80%93black_tree 
 // todo: I am sure that my implementation of Red-Black Tree is total bs, and there is a much better way to create self-balancing search tree, so TODO: check if there is a way to make it faster
@@ -124,17 +127,38 @@ static inline AllocationNode *RBT_RotateRight(AllocationNode *root, AllocationNo
     AllocationNode *second = first->left;
     assert(second);
 
+    uint64_t first_checksum       = HeapArenaGetNodeChecksum(first);
+    uint64_t second_checksum      = HeapArenaGetNodeChecksum(second);
+    assert(first->checksum  == first_checksum);
+    assert(second->checksum == second_checksum);
+
     first->left = second->right;
-    if (first->left) first->left->parent = first;
+    if (first->left) {
+        uint64_t first_left_checksum = HeapArenaGetNodeChecksum(first->left);
+        assert(first->left->checksum == first_left_checksum);
+
+        first->left->parent = first;
+  
+        first_left_checksum = HeapArenaGetNodeChecksum(first->left);
+        first->left->checksum = first_left_checksum;
+    }
 
     second->right = first;
     first->parent = second;
-
     second->parent = grandparent;
+
+    uint64_t new_first_checksum  = HeapArenaGetNodeChecksum(first);
+    uint64_t new_second_checksum = HeapArenaGetNodeChecksum(second);
+    first->checksum = new_first_checksum;
+    second->checksum = new_second_checksum;
+
     if (!grandparent) {
         assert(first == root);
         return second;
     } 
+
+    uint64_t grandparent_checksum = HeapArenaGetNodeChecksum(grandparent);
+    assert(grandparent->checksum == grandparent_checksum && "corrupted memory");
 
     if (grandparent->left == first) {
         grandparent->left  = second;
@@ -143,6 +167,9 @@ static inline AllocationNode *RBT_RotateRight(AllocationNode *root, AllocationNo
     } else {
         assert(0);
     }
+
+    uint64_t new_grandparent_checksum = HeapArenaGetNodeChecksum(grandparent); 
+    grandparent->checksum = new_grandparent_checksum;
     
     return root;
 }
@@ -152,17 +179,39 @@ static inline AllocationNode *RBT_RotateLeft(AllocationNode *root, AllocationNod
     AllocationNode *second = first->right;
     assert(second);
 
+    uint64_t first_checksum       = HeapArenaGetNodeChecksum(first);
+    uint64_t second_checksum      = HeapArenaGetNodeChecksum(second);
+    assert(first->checksum  == first_checksum);
+    assert(second->checksum == second_checksum);
+
+
     first->right = second->left;   
-    if (first->right) first->right->parent = first;
+    if (first->right) {
+        uint64_t first_right_checksum = HeapArenaGetNodeChecksum(first->right);
+        assert(first->right->checksum == first_right_checksum && "corrupted memory");
+
+        first->right->parent = first;
+
+        first_right_checksum = HeapArenaGetNodeChecksum(first->right);
+        first->right->checksum = first_right_checksum;
+    }
 
     second->left = first;
     first->parent = second;
-
     second->parent = grandparent;
+
+    uint64_t new_first_checksum  = HeapArenaGetNodeChecksum(first);
+    uint64_t new_second_checksum = HeapArenaGetNodeChecksum(second);
+    first->checksum = new_first_checksum;
+    second->checksum = new_second_checksum;
+
     if (!grandparent) {
         assert(first == root);
         return second;
     } 
+
+    uint64_t grandparent_checksum = HeapArenaGetNodeChecksum(grandparent);
+    assert(grandparent->checksum == grandparent_checksum && "corrupted memory");
 
     if (grandparent->left == first) {
         grandparent->left  = second;
@@ -171,11 +220,14 @@ static inline AllocationNode *RBT_RotateLeft(AllocationNode *root, AllocationNod
     } else {
         assert(0);
     }
-    
+
+    uint64_t new_grandparent_checksum = HeapArenaGetNodeChecksum(grandparent); 
+    grandparent->checksum = new_grandparent_checksum;
+
     return root;
 }
 
-static inline AllocationNode *RBT_AddNode(AllocationNode *parent, AllocationNode *new_node) {
+static inline AllocationNode *RBT_AddNode(AllocationNode *root, AllocationNode *new_node) {
     assert(new_node);
     assert(new_node->color == RBT_RED);
     assert(!new_node->left);
@@ -184,21 +236,36 @@ static inline AllocationNode *RBT_AddNode(AllocationNode *parent, AllocationNode
     assert(!new_node->next);
     assert(!new_node->previous);
 
-    if (!parent) {
+    if (!root) {
         return new_node;
     }
 
-    AllocationNode *root = parent;
+    AllocationNode *parent = root;
+    uint64_t parent_checksum = HeapArenaGetNodeChecksum(parent);
+    assert(parent_checksum == parent->checksum && "corrupted memory");
     while(true) {
         if (parent->size == new_node->size) {
             assert(parent != new_node && "One node is inserted multiple times");
             if (parent->next) {
+                uint64_t next_checksum = HeapArenaGetNodeChecksum(parent->next);
+                assert(parent->next->checksum == next_checksum);
+
                 new_node->next = parent->next;
                 new_node->next->previous = new_node;
+
+                uint64_t new_next_checksum = HeapArenaGetNodeChecksum(new_node->next); 
+                new_node->next->checksum = new_next_checksum; 
             }
 
             parent->next = new_node;
             new_node->previous = parent;
+
+            uint64_t parent_checksum   = HeapArenaGetNodeChecksum(parent);
+            uint64_t new_node_checksum = HeapArenaGetNodeChecksum(new_node);
+
+            parent->checksum = parent_checksum;
+            new_node->checksum = new_node_checksum;
+
             return root;
         }
         if (parent->size > new_node->size) {
@@ -216,10 +283,20 @@ static inline AllocationNode *RBT_AddNode(AllocationNode *parent, AllocationNode
                 break;
             }
         }
+
+        parent_checksum = HeapArenaGetNodeChecksum(parent);
+        assert(parent_checksum == parent->checksum && "corrupted memory");
     }  
 
     AllocationNode *node = new_node;
     node->parent = parent;
+
+    uint64_t node_checksum  = HeapArenaGetNodeChecksum(node);
+    node->checksum = node_checksum;
+
+    parent_checksum = HeapArenaGetNodeChecksum(parent);
+    parent->checksum = parent_checksum;
+
     while (true) {
         AllocationNode *parent = node->parent; 
         if (!parent) {
@@ -240,8 +317,15 @@ static inline AllocationNode *RBT_AddNode(AllocationNode *parent, AllocationNode
         AllocationNode *grandparent = parent->parent;
         if (!grandparent) {
             parent->color = RBT_BLACK;
-            return root;
+
+            uint64_t parent_checksum = HeapArenaGetNodeChecksum(parent);
+            parent->checksum = parent_checksum;
+
+            return parent;
         }
+
+        uint64_t grandparent_checksum = HeapArenaGetNodeChecksum(grandparent);
+        assert(grandparent->checksum == grandparent_checksum && "corrupted memory");
 
         RBT_Direction parent_dir;
         AllocationNode *uncle = 0;
@@ -253,14 +337,28 @@ static inline AllocationNode *RBT_AddNode(AllocationNode *parent, AllocationNode
             parent_dir = RBT_RIGHT;
         }
 
-        if (uncle && uncle->color == RBT_RED) {
-            parent->color = RBT_BLACK; 
-            uncle->color  = RBT_BLACK;
-            grandparent->color = RBT_RED;
-        
-            node = grandparent;
-            continue; 
-        }  
+        if (uncle) {
+            uint64_t uncle_checksum = HeapArenaGetNodeChecksum(uncle);
+            assert(uncle->checksum == uncle_checksum && "corrupted memory");
+
+            if (uncle->color == RBT_RED) {
+                parent->color = RBT_BLACK; 
+                uncle->color  = RBT_BLACK;
+                grandparent->color = RBT_RED; 
+
+                uncle_checksum       = HeapArenaGetNodeChecksum(uncle);
+                parent_checksum      = HeapArenaGetNodeChecksum(parent);
+                grandparent_checksum = HeapArenaGetNodeChecksum(grandparent);
+                uncle->checksum      = uncle_checksum;
+                parent->checksum     = parent_checksum;
+                grandparent->checksum = grandparent_checksum;
+                
+
+                node = grandparent;
+                continue; 
+            }
+
+        }
 
         // TODO: I for sure can get rid of nested if-elses
         if (parent_dir != insert_dir) {
@@ -270,15 +368,12 @@ static inline AllocationNode *RBT_AddNode(AllocationNode *parent, AllocationNode
                 root = RBT_RotateLeft(root, parent);
             }
             // note: we don't reference node below, so we don't update it 
-#if 0
-            parent = node;
-#else
+
             if (parent_dir == RBT_LEFT) {
                 parent = grandparent->left;
             } else {
                 parent = grandparent->right;
             }
-#endif
         }
 
         if (parent_dir == RBT_LEFT) {
@@ -289,6 +384,13 @@ static inline AllocationNode *RBT_AddNode(AllocationNode *parent, AllocationNode
 
         parent->color = RBT_BLACK;
         grandparent->color = RBT_RED;
+
+        parent_checksum = HeapArenaGetNodeChecksum(parent);
+        grandparent_checksum = HeapArenaGetNodeChecksum(grandparent);
+
+        parent->checksum = parent_checksum;
+        grandparent->checksum = grandparent_checksum;
+
         return root;
     }
 }
@@ -318,48 +420,94 @@ static inline AllocationNode *RBT_SwapNodes(AllocationNode *root, AllocationNode
 
     first->left = second->left;
     if (first->left) {
+        uint64_t first_left_checksum = HeapArenaGetNodeChecksum(first->left);
+        assert(first->left->checksum == first_left_checksum && "Corrupted memory");
+
         first->left->parent = first;
+
+        first_left_checksum = HeapArenaGetNodeChecksum(first->left);
+        first->left->checksum = first_left_checksum;
     }
     first->right = second->right;
     if (first->right) {
+        uint64_t first_right_checksum = HeapArenaGetNodeChecksum(first->right);
+        assert(first->right->checksum == first_right_checksum && "Corrupted memory");
+
         first->right->parent = first;
+
+        first_right_checksum = HeapArenaGetNodeChecksum(first->right);
+        first->right->checksum = first_right_checksum;
     }
     first->color = second->color;
 
-    second->left  = first_left;
+    second->left = first_left;
     if (second->left) {
+        uint64_t second_left_checksum = HeapArenaGetNodeChecksum(second->left);
+        assert(second->left->checksum == second_left_checksum && "Corrupted memory");
+
         second->left->parent = second;
+
+        second_left_checksum = HeapArenaGetNodeChecksum(second->left);
+        second->left->checksum = second_left_checksum;
     }
     second->right = first_right; 
     if (second->right) {
+        uint64_t second_right_checksum = HeapArenaGetNodeChecksum(second->right);
+        assert(second->right->checksum == second_right_checksum && "Corrupted memory");
+
         second->right->parent = second;
+
+        second_right_checksum = HeapArenaGetNodeChecksum(second->right);
+        second->right->checksum = second_right_checksum;
     }
     second->color = first_color;
 
     AllocationNode *new_first_parent  = second->parent;
     AllocationNode *new_second_parent = first->parent;
+
     assert(new_first_parent);
+    uint64_t new_first_parent_checksum = HeapArenaGetNodeChecksum(new_first_parent);
+    assert(new_first_parent->checksum == new_first_parent_checksum && "corrupted memory");
+
     if (new_first_parent == first) {
         new_first_parent = second;
     } 
 
     first->parent = new_first_parent;
+    second->parent = new_second_parent;
+
+    uint64_t first_checksum  = HeapArenaGetNodeChecksum(first);
+    uint64_t second_checksum = HeapArenaGetNodeChecksum(second);
+    first->checksum  = first_checksum;
+    second->checksum = second_checksum;
+
     if (second_dir == RBT_LEFT) {
         new_first_parent->left  = first;
     } else {
         new_first_parent->right = first;
     }
 
-    second->parent = new_second_parent;
     if (!new_second_parent) {
+        new_first_parent_checksum = HeapArenaGetNodeChecksum(new_first_parent);
+        new_first_parent->checksum = new_first_parent_checksum;
         return second;
     }
+
+    uint64_t new_second_parent_checksum = HeapArenaGetNodeChecksum(new_second_parent);
+    assert(new_second_parent->checksum == new_second_parent_checksum && "corrupted memory");
 
     if (first_dir == RBT_LEFT) {
         new_second_parent->left  = second;
     } else {
         new_second_parent->right = second;
     }
+
+
+    new_first_parent_checksum = HeapArenaGetNodeChecksum(new_first_parent);
+    new_first_parent->checksum = new_first_parent_checksum;
+ 
+    new_second_parent_checksum = HeapArenaGetNodeChecksum(new_second_parent);
+    new_second_parent->checksum = new_second_parent_checksum;
 
     return root;
 }
@@ -368,11 +516,16 @@ static inline AllocationNode *RBT_RemoveNode(AllocationNode *root, AllocationNod
     // simple cases
     if (node->left && node->right) {
         AllocationNode *leftmost_child = node->right;
+        uint64_t leftmost_child_checksum = HeapArenaGetNodeChecksum(leftmost_child); 
+        assert(leftmost_child->checksum == leftmost_child_checksum && "corrupted memory");
+
         while(true) {
             if (!leftmost_child->left) {
                 break; 
             }
             leftmost_child = leftmost_child->left;
+            leftmost_child_checksum = HeapArenaGetNodeChecksum(leftmost_child); 
+            assert(leftmost_child->checksum == leftmost_child_checksum && "corrupted memory");
         }
        
         root = RBT_SwapNodes(root, node, leftmost_child);
@@ -384,33 +537,55 @@ static inline AllocationNode *RBT_RemoveNode(AllocationNode *root, AllocationNod
     if (node->left) {
         AllocationNode *parent = node->parent;
         AllocationNode *new_node = node->left;
+        uint64_t new_node_checksum = HeapArenaGetNodeChecksum(new_node);
+        assert(new_node_checksum == new_node->checksum && "corrupted memory");
 
         new_node->color = RBT_BLACK;
         new_node->parent = parent;
         if (!parent) {
+            new_node_checksum  = HeapArenaGetNodeChecksum(new_node);
+            new_node->checksum = new_node_checksum;
             return new_node;
         }
+
+        uint64_t parent_checksum = HeapArenaGetNodeChecksum(parent);
+        assert(parent->checksum == parent_checksum);
+
         if (parent->left == node) {
-            parent->left  = new_node;
+            parent->left = new_node;
         } else if (parent->right == node) {
             parent->right = new_node;
         } else {
             assert(0);
         }
 
-        new_node->left  = 0;
+        new_node->left = 0;
+
+        new_node_checksum = HeapArenaGetNodeChecksum(new_node);
+        new_node->checksum = new_node_checksum;
+        parent_checksum = HeapArenaGetNodeChecksum(parent);
+        parent->checksum  = parent_checksum;
+
         return root;
     }
     
     if (node->right) {
         AllocationNode *parent = node->parent;
         AllocationNode *new_node = node->right;
+        uint64_t new_node_checksum = HeapArenaGetNodeChecksum(new_node);
+        assert(new_node_checksum == new_node->checksum && "corrupted memory");
 
         new_node->color = RBT_BLACK;
         new_node->parent = parent;
         if (!parent) {
+            new_node_checksum  = HeapArenaGetNodeChecksum(new_node);
+            new_node->checksum = new_node_checksum;
             return new_node;
         }
+
+        uint64_t parent_checksum = HeapArenaGetNodeChecksum(parent);
+        assert(parent->checksum == parent_checksum);
+
         if (parent->left == node) {
             parent->left  = new_node;
         } else if (parent->right == node) {
@@ -419,7 +594,13 @@ static inline AllocationNode *RBT_RemoveNode(AllocationNode *root, AllocationNod
             assert(0);
         }
 
-        new_node->right  = 0;
+        parent_checksum = HeapArenaGetNodeChecksum(parent);
+        parent->checksum  = parent_checksum;
+
+        new_node->right = 0;
+        new_node_checksum = HeapArenaGetNodeChecksum(new_node);
+        new_node->checksum = new_node_checksum;
+
         return root;
     }
 
@@ -432,11 +613,17 @@ static inline AllocationNode *RBT_RemoveNode(AllocationNode *root, AllocationNod
         AllocationNode *parent = node->parent; 
         assert(parent && "last node should always be black");
 
+        uint64_t parent_checksum = HeapArenaGetNodeChecksum(parent);
+        assert(parent->checksum == parent_checksum);
+
         if (parent->left == node) {
             parent->left  = 0;     
         } else {
             parent->right = 0;
         }
+
+        parent_checksum = HeapArenaGetNodeChecksum(parent);
+        parent->checksum  = parent_checksum;
 
         return root;
     }
@@ -455,18 +642,30 @@ static inline AllocationNode *RBT_RemoveNode(AllocationNode *root, AllocationNod
     // comlex cases
     while (true) {
         AllocationNode *parent = node->parent;
+
+        uint64_t parent_checksum = HeapArenaGetNodeChecksum(parent);
+        assert(parent->checksum == parent_checksum);
+
+        uint64_t sibling_checksum = 0;
+        uint64_t close_newphew_checksum = 0;
+        uint64_t distant_newphew_checksum = 0; 
+
         AllocationNode *sibling = 0;
         AllocationNode *close_newphew = 0;
         AllocationNode *distant_newphew = 0;
         if (dir == RBT_LEFT) {
             sibling = parent->right;
             if (sibling) {
+                sibling_checksum = HeapArenaGetNodeChecksum(sibling);
+                assert(sibling->checksum == sibling_checksum && "corrupted memory");
                 close_newphew   = sibling->left;
                 distant_newphew = sibling->right;
             }
         } else {
             sibling = parent->left;
             if (sibling) {
+                sibling_checksum = HeapArenaGetNodeChecksum(sibling);
+                assert(sibling->checksum == sibling_checksum && "corrupted memory");
                 close_newphew   = sibling->right;
                 distant_newphew = sibling->left;
             }
@@ -474,17 +673,40 @@ static inline AllocationNode *RBT_RemoveNode(AllocationNode *root, AllocationNod
 
         bool parent_is_black =
             parent->color == RBT_BLACK;
-        bool sibling_is_black = 
-            !sibling || sibling->color == RBT_BLACK;
-        bool close_newphew_is_black = 
-            !close_newphew || close_newphew->color == RBT_BLACK;
-        bool distant_newphew_is_black = 
-            !distant_newphew || distant_newphew->color == RBT_BLACK;
+        bool sibling_is_black         = true;
+        bool close_newphew_is_black   = true;
+        bool distant_newphew_is_black = true;
 
+        if (sibling) {
+            sibling_checksum = HeapArenaGetNodeChecksum(sibling);
+            assert(sibling->checksum == sibling_checksum);
+            if (sibling->color == RBT_RED) {
+                sibling_is_black = false;
+            }
+        }
+
+        if (close_newphew) {
+            close_newphew_checksum = HeapArenaGetNodeChecksum(close_newphew);
+            assert(close_newphew->checksum == close_newphew_checksum && "corrupted memory");
+            if (close_newphew->color == RBT_RED) {
+                close_newphew_is_black = false;
+            }
+        }
+        if (distant_newphew) {
+            distant_newphew_checksum = HeapArenaGetNodeChecksum(distant_newphew);
+            assert(distant_newphew->checksum == distant_newphew_checksum && "corrupted memory");
+            if (distant_newphew->color == RBT_RED) {
+                distant_newphew_is_black = false;
+            }
+        }
+ 
         if (parent_is_black && sibling_is_black && close_newphew_is_black && distant_newphew_is_black) {
             // Case #2
             sibling->color = RBT_RED; 
             node = parent;
+
+            sibling_checksum = HeapArenaGetNodeChecksum(sibling);
+            sibling->checksum = sibling_checksum;
 
             // Case #1 
             if (!node->parent) {
@@ -509,36 +731,69 @@ static inline AllocationNode *RBT_RemoveNode(AllocationNode *root, AllocationNod
                 parent->color = RBT_RED;
                 sibling->color = RBT_BLACK;
 
+                parent_checksum   = HeapArenaGetNodeChecksum(parent);
+                sibling_checksum  = HeapArenaGetNodeChecksum(sibling);
+                parent->checksum  = parent_checksum;
+                sibling->checksum = sibling_checksum;
+
                 sibling = close_newphew;
-                close_newphew  = sibling->left;
+                close_newphew   = sibling->left;
                 distant_newphew = sibling->right; 
             } else {
                 root = RBT_RotateRight(root, parent);
                 parent->color = RBT_RED;
                 sibling->color = RBT_BLACK;
 
+                parent_checksum   = HeapArenaGetNodeChecksum(parent);
+                sibling_checksum  = HeapArenaGetNodeChecksum(sibling);
+                parent->checksum  = parent_checksum;
+                sibling->checksum = sibling_checksum;
+
                 sibling = close_newphew;
-                close_newphew  = sibling->right;
+                close_newphew   = sibling->right;
                 distant_newphew = sibling->left; 
             }
         }
 
-        sibling_is_black = 
-            !sibling || sibling->color == RBT_BLACK;
-        close_newphew_is_black = 
-            !close_newphew || close_newphew->color == RBT_BLACK;
-        distant_newphew_is_black = 
-            !distant_newphew || distant_newphew->color == RBT_BLACK;
+        sibling_is_black         = true;
+        close_newphew_is_black   = true;
+        distant_newphew_is_black = true;
+
+        /* new sibling is a close_newphew, and it is verified already*/
+        if (sibling && sibling->color == RBT_RED) {
+            sibling_is_black = false;
+        }
+
+        if (close_newphew) {
+            close_newphew_checksum = HeapArenaGetNodeChecksum(close_newphew);
+            assert(close_newphew->checksum == close_newphew_checksum && "corrupted memory");
+            if (close_newphew->color == RBT_RED) {
+                close_newphew_is_black = false;
+            }
+        }
+        if (distant_newphew) {
+            distant_newphew_checksum = HeapArenaGetNodeChecksum(distant_newphew);
+            assert(distant_newphew->checksum == distant_newphew_checksum && "corrupted memory");
+            if (distant_newphew->color == RBT_RED) {
+                distant_newphew_is_black = false;
+            }
+        }
 
         assert(sibling_is_black);
-
-        if (sibling_is_black && close_newphew_is_black && distant_newphew_is_black) {
+        if (close_newphew_is_black && distant_newphew_is_black) {
             assert(parent->color == RBT_RED);
             parent->color = RBT_BLACK;
             sibling->color = RBT_RED;
+
+            parent_checksum  = HeapArenaGetNodeChecksum(parent);
+            sibling_checksum = HeapArenaGetNodeChecksum(sibling); 
+            parent->checksum = parent_checksum;
+            sibling->checksum = sibling_checksum;
+
             return root;
         }
 
+        // nocommit: do we need to verify new newphews?
         // if our distant newphew is already red, we can skip unnessesary rotataion (although if we don't skip it, resulting tree seems to be perfecly fine)
         if (distant_newphew_is_black && !close_newphew_is_black) {
             if (dir == RBT_LEFT) {
@@ -568,10 +823,11 @@ static inline AllocationNode *RBT_RemoveNode(AllocationNode *root, AllocationNod
                 !close_newphew || close_newphew->color == RBT_BLACK;
             distant_newphew_is_black = 
                 !distant_newphew || distant_newphew->color == RBT_BLACK;
+
+            assert(sibling_is_black);
+            assert(!distant_newphew_is_black); 
         }
 
-        assert(sibling_is_black);
-        assert(!distant_newphew_is_black); 
         if (dir == RBT_LEFT) {
             root = RBT_RotateLeft(root, parent);
             sibling->color = parent->color;
@@ -582,6 +838,13 @@ static inline AllocationNode *RBT_RemoveNode(AllocationNode *root, AllocationNod
 
         parent->color = RBT_BLACK;
         distant_newphew->color = RBT_BLACK;
+
+        parent_checksum = HeapArenaGetNodeChecksum(parent);
+        sibling_checksum = HeapArenaGetNodeChecksum(sibling);
+        distant_newphew_checksum = HeapArenaGetNodeChecksum(distant_newphew);
+        parent->checksum          = parent_checksum;
+        sibling->checksum         = sibling_checksum;
+        distant_newphew->checksum = distant_newphew_checksum; 
 
         return root;
     }
@@ -614,22 +877,44 @@ AllocationNode *RBT_RemoveSize(AllocationNode *root, AllocationNode *node) {
 
     AllocationNode *next = node->next;
     if (next) {
+        checksum = HeapArenaGetNodeChecksum(next);
+        assert(next->checksum == checksum);
+
         next->color  = node->color;
         next->left   = node->left;
         if (next->left) {
-            next->left->parent = next;
-        }
-        next->right  = node->right;
-        if (next->right) {
-            next->right->parent = next;
-        }
-        next->previous = 0;
+            checksum = HeapArenaGetNodeChecksum(next->left);
+            assert(next->left->checksum == checksum);
 
+            next->left->parent = next;
+
+            checksum = HeapArenaGetNodeChecksum(next->left);
+            next->left->checksum = checksum;
+        }
+        next->right = node->right;
+        if (next->right) {
+            checksum = HeapArenaGetNodeChecksum(next->right);
+            assert(next->right->checksum == checksum);
+
+            next->right->parent = next;
+
+            checksum = HeapArenaGetNodeChecksum(next->right);
+            next->right->checksum = checksum;
+        }
+
+        next->previous = 0;
         next->parent = node->parent;
         if (!next->parent) {
             assert(node == root);
+
+            checksum = HeapArenaGetNodeChecksum(next);
+            next->checksum = checksum;
+
             return next;
         }
+
+        checksum = HeapArenaGetNodeChecksum(next->parent);
+        assert(next->parent->checksum == checksum);
 
         if (next->parent->left == node) {
             next->parent->left = next;
@@ -639,6 +924,12 @@ AllocationNode *RBT_RemoveSize(AllocationNode *root, AllocationNode *node) {
             assert(0);
         }
 
+        checksum = HeapArenaGetNodeChecksum(next->parent);
+        next->parent->checksum = checksum;
+
+        checksum = HeapArenaGetNodeChecksum(next);
+        next->checksum = checksum;
+        
         return root;
     }
 
@@ -843,7 +1134,6 @@ static inline AllocationNode *HeapArenaSeparateExtraMemory(HeapArena *arena, All
         arena->last_node = next;
     }
 
-    arena->root = RBT_AddNode(arena->root, next);
     arena->free_size += free_size;
 
     uint64_t node_checksum = HeapArenaGetNodeChecksum(node);
@@ -856,6 +1146,7 @@ static inline AllocationNode *HeapArenaSeparateExtraMemory(HeapArena *arena, All
         next->next_in_order->checksum = next_next_checksum;
     }
 
+    arena->root = RBT_AddNode(arena->root, next);
     return next;
 }
 
@@ -928,7 +1219,7 @@ void HeapArenaFree(HeapArena *arena, void *memory) {
     ^        ^        ^
     previous node     next
 
-    It happens because memory that we are claiming to have is actually located before us, in the previous node. Obviously, to fix this we just need to go back one node, so we start at the previous one:
+    It happens because memory that we are claiming to have is actually located before us, in the previous node. Obviously, to fix this we just need to go one node back, so we start at the previous one:
 
     previous + node
     v
@@ -962,8 +1253,6 @@ void HeapArenaFree(HeapArena *arena, void *memory) {
         }
     } 
 
-    arena->root = RBT_AddNode(arena->root, info);
-
     if (info->next_in_order) {
         uint64_t new_next_checksum = HeapArenaGetNodeChecksum(info->next_in_order);
         info->next_in_order->checksum = new_next_checksum;
@@ -976,6 +1265,8 @@ void HeapArenaFree(HeapArena *arena, void *memory) {
 
     uint64_t new_info_checksum = HeapArenaGetNodeChecksum(info);
     info->checksum = new_info_checksum;
+
+    arena->root = RBT_AddNode(arena->root, info);
 }
 
 // Note: from what i've seen, this function is not vectorized by the compiler
@@ -1016,8 +1307,9 @@ void *HeapArenaRealloc(HeapArena *arena, void *memory, int64_t new_size) {
     }
     // volatile: make sure that it won't change contents of the node
     HeapArenaFree(arena, memory);
-     
+
     AllocationNode *new_node = HeapArenaGetNode(arena, new_size);
+
     void *new_memory = SkipAllocationNode(new_node);
     if (new_memory != memory) {
         int64_t saved_size = old_size;

@@ -1,9 +1,9 @@
 #define EPOCH_COUNT 0
 #define PRINT_STEPS             FALSE
-#define ENABLE_INTEGRITY_CHECKS TRUE
-#define NORMAL_ALLOCATION_SIZE  1024
-#define MAX_AMOUNT_TO_ALLOCATE  1024*100
-#define ALLOCATION_COUNT        1024*5
+#define ENABLE_INTEGRITY_CHECKS FALSE
+#define NORMAL_ALLOCATION_SIZE  1024*1024*10
+#define MAX_AMOUNT_TO_ALLOCATE  1024
+#define ALLOCATION_COUNT        1024*1024*2
 #define CHANCE_TO_REALLOCATE    10
 #define CHANCE_TO_DEALLOCATE    10
 
@@ -289,7 +289,6 @@ int main() {
         end = GetHighResolutionClock();
         time_diff = HighResolutionClockDiff(start, end);
         our_alloc_time += time_diff;
-
 
         maybe_random_fill(our_memory, malloc_memory, to_allocate);
 #if PRINT_STEPS
