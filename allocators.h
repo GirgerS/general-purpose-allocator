@@ -6,23 +6,26 @@
 #include "stdbool.h"
 #include "string.h"
 
+// nocommit: make sure we don't compute redundant hashes. Even though I am using VERY fast hash and RBT part is excluded, it still take almost half of the programm time.
+// nocommit: bake hash that I'am going to use into this file
+#include "meow_hash_x64_aesni.h"
+
 typedef struct MemoryBlock MemoryBlock;
 struct MemoryBlock {
     MemoryBlock *next;
 };
 
-typedef enum RBT_Color RBT_Color;
-enum RBT_Color {
+typedef enum {
     RBT_RED,
     RBT_BLACK,
-};
+} RBT_Color;
 
 typedef struct AllocationNode AllocationNode;
 struct AllocationNode {
     int64_t size;
     int64_t used_size; // arena currently doesn't create nodes smaller than sizeof(AllocationNode), so they remain as a part of the previous node, affecting its size. And in some cases we want to know what is the size that user asked for
 
-    // note: we don't need these field if the memory is allocate, means that it is face to hand them to the user, decreasing allocation overhead!
+    // note: we don't need these field if the memory is allocated, meaning that it is safe to hand them to the user, decreasing allocation overhead!
     AllocationNode  *parent;
     AllocationNode  *left;
     AllocationNode  *right;
@@ -35,8 +38,10 @@ struct AllocationNode {
     MemoryBlock     *memory_block;
     AllocationNode  *previous_in_order;
     AllocationNode  *next_in_order;
-};
 
+    // todo: I cannot use __m128 in there, because than compiler will assume that alignement of this struct is at least 16 bytes, and will issue erronous movaps instuction. This needs to be fixed
+    uint64_t checksum;
+};
 
 typedef struct HeapArena HeapArena;
 struct HeapArena {
@@ -67,7 +72,7 @@ void  PlatformFreeMemory(void *memory);
 // also, NORMAL_ALLOCATION_SIZE macro can be defined to set default page size for the allocator, for example:
 // #define NORMAL_ALLOCATION_SIZE 1024*1024
 
-// I requested size is larger than NORMAL_ALLOCATION_SIZE, then allocator will try to allocate page that has exactly the desired size (todo: right now it doesn't account for allocation granularity, and may waste so memory)
+// If requested size is larger than NORMAL_ALLOCATION_SIZE, then allocator will try to allocate page that has exactly the desired size (todo: right now it doesn't account for allocation granularity, and may waste so memory)
 
 #ifndef NORMAL_ALLOCATION_SIZE
 #define NORMAL_ALLOCATION_SIZE 1024
@@ -79,15 +84,33 @@ void  PlatformFreeMemory(void *memory);
 #include "stdio.h"
 #include "assert.h"
 
+// nocommit: find a better place for this function
+static inline uint64_t HeapArenaGetNodeChecksum(AllocationNode *node) {
+    AllocationNode test_node = *node;
+    test_node.checksum = 0;
+
+    test_node.parent   = 0;
+    test_node.left     = 0;
+    test_node.right    = 0;
+    test_node.previous = 0; 
+    test_node.next     = 0;
+    test_node.color    = (RBT_Color)0;
+    test_node.occupied = (bool)0;
+
+    int64_t node_size = (int64_t)sizeof(AllocationNode); 
+    meow_u128 checksum   = MeowHash(MeowDefaultSeed, node_size, &test_node); 
+    uint64_t  checksum64 = MeowU64From(checksum, 0);
+    return checksum64;
+}
+
 // current source: https://en.wikipedia.org/wiki/Red%E2%80%93black_tree 
 // todo: I am sure that my implementation of Red-Black Tree is total bs, and there is a much better way to create self-balancing search tree, so TODO: check if there is a way to make it faster
-typedef enum RBT_Direction RBT_Direction;
-enum RBT_Direction {
+typedef enum {
     RBT_LEFT,
     RBT_RIGHT,
-};
+} RBT_Direction;
 
-inline void RBT_ResetNode(AllocationNode *node) {
+static inline void RBT_ResetNode(AllocationNode *node) {
     node->left = 0;
     node->right = 0;
     node->previous = 0; 
@@ -96,7 +119,7 @@ inline void RBT_ResetNode(AllocationNode *node) {
     node->color = RBT_RED;
 }
 
-inline AllocationNode *RBT_RotateRight(AllocationNode *root, AllocationNode *first) {
+static inline AllocationNode *RBT_RotateRight(AllocationNode *root, AllocationNode *first) {
     AllocationNode *grandparent = first->parent;
     AllocationNode *second = first->left;
     assert(second);
@@ -124,7 +147,7 @@ inline AllocationNode *RBT_RotateRight(AllocationNode *root, AllocationNode *fir
     return root;
 }
 
-inline AllocationNode *RBT_RotateLeft(AllocationNode *root, AllocationNode *first) {
+static inline AllocationNode *RBT_RotateLeft(AllocationNode *root, AllocationNode *first) {
     AllocationNode *grandparent = first->parent;
     AllocationNode *second = first->right;
     assert(second);
@@ -166,7 +189,6 @@ static inline AllocationNode *RBT_AddNode(AllocationNode *parent, AllocationNode
     }
 
     AllocationNode *root = parent;
-
     while(true) {
         if (parent->size == new_node->size) {
             assert(parent != new_node && "One node is inserted multiple times");
@@ -273,7 +295,7 @@ static inline AllocationNode *RBT_AddNode(AllocationNode *parent, AllocationNode
 
 // note: second node should be deeper than first node or at least on the same level with it
 // there it no way to check it, thought, so this function might silently fail...
-inline AllocationNode *RBT_SwapNodes(AllocationNode *root, AllocationNode *first, AllocationNode *second) {
+static inline AllocationNode *RBT_SwapNodes(AllocationNode *root, AllocationNode *first, AllocationNode *second) {
     RBT_Direction second_dir;
     if (second->parent->left == second) {
         second_dir = RBT_LEFT;
@@ -345,7 +367,6 @@ inline AllocationNode *RBT_SwapNodes(AllocationNode *root, AllocationNode *first
 static inline AllocationNode *RBT_RemoveNode(AllocationNode *root, AllocationNode *node) {
     // simple cases
     if (node->left && node->right) {
-        AllocationNode *parent         = node->parent;
         AllocationNode *leftmost_child = node->right;
         while(true) {
             if (!leftmost_child->left) {
@@ -568,15 +589,26 @@ static inline AllocationNode *RBT_RemoveNode(AllocationNode *root, AllocationNod
 
 // todo: rename remove functions
 AllocationNode *RBT_RemoveSize(AllocationNode *root, AllocationNode *node) {
+    uint64_t checksum = HeapArenaGetNodeChecksum(node);
+    assert(node->checksum == checksum && "corrupted memory");
+
     AllocationNode *previous = node->previous;
     if (previous) {
-        assert(previous->next == node);
+        checksum = HeapArenaGetNodeChecksum(previous);
+        assert(previous->checksum == checksum);
+
+        assert(previous->next == node); 
         
         previous->next = node->next;
         if (previous->next) {
+            checksum = HeapArenaGetNodeChecksum(previous->next);
+            assert(previous->next->checksum == checksum);
             previous->next->previous = previous;
-        } 
 
+            checksum = HeapArenaGetNodeChecksum(previous->next);
+            previous->next->checksum = checksum;
+        } 
+       
         return root;
     }
 
@@ -641,7 +673,7 @@ AllocationNode *RBT_FindClosest(AllocationNode *root, int64_t size) {
     } 
 }
 
-#define PRINT(...) fprintf(stdout, __VA_ARGS__);
+#define PRINT(...) fprintf(stdout, __VA_ARGS__)
 #define PRINT_INDENT(size) fprintf(stdout, "%*s", (int)(size), "")
 void RBT_DumpNode(AllocationNode *node, int64_t indent) {
     char *color_string = 0;
@@ -707,19 +739,19 @@ void RBT_Dump(AllocationNode *node) {
     RBT_DumpNode(node, 0);
 }
 
-inline AllocationNode *SkipMemoryBlockHeader(MemoryBlock *header) {
+static inline AllocationNode *SkipMemoryBlockHeader(MemoryBlock *header) {
     uint8_t *res = (uint8_t*)header;
     res += sizeof(MemoryBlock); 
     return (AllocationNode*)res;
 }
 
-inline void *SkipAllocationNode(AllocationNode *info) {
+static inline void *SkipAllocationNode(AllocationNode *info) {
     uint8_t *res = (uint8_t*)info;
     res += sizeof(AllocationNode);
     return res;
 }
 
-inline AllocationNode *GetAllocationNode(void *memory) {
+static inline AllocationNode *GetAllocationNode(void *memory) {
     return (AllocationNode*)((uint8_t*)memory - sizeof(AllocationNode));
 }
 
@@ -734,13 +766,16 @@ MemoryBlock *AllocateNewBlock(HeapArena *arena, int64_t size) {
     info->size = size - sizeof(MemoryBlock) - sizeof(AllocationNode);
     info->memory_block = res;
 
+    uint64_t checksum = HeapArenaGetNodeChecksum(info);
+    info->checksum = checksum;
+
     arena->allocated_size += size;
     arena->free_size += info->size;
     return res;
 }
 
 // Note: the only reason these functions exist is because HeapArenaAllocate and HeapArenaReallocate share almost the same code, except that in cast of reallocation it should copy memory from the previous allocation, right in between these functions. If it weren't for this difference, these function would be merged with HeapArenaAllocate
-inline AllocationNode *HeapArenaGetNode(HeapArena *arena, int64_t size) {
+static inline AllocationNode *HeapArenaGetNode(HeapArena *arena, int64_t size) {
     AllocationNode *node = RBT_FindClosest(arena->root, size);
     if (!node) {
         MemoryBlock *block = AllocateNewBlock(arena, size);
@@ -757,22 +792,34 @@ inline AllocationNode *HeapArenaGetNode(HeapArena *arena, int64_t size) {
         arena->last_node = node;
          
         node->memory_block = block;
-        arena->root = RBT_AddNode(arena->root, node);
+    } else {
+        arena->root = RBT_RemoveSize(arena->root, node);
     }
 
     node->occupied = true;
     node->used_size = size;
-    arena->root = RBT_RemoveSize(arena->root, node);
     RBT_ResetNode(node);
+
+    if (node->previous_in_order) {
+        uint64_t checksum = HeapArenaGetNodeChecksum(node->previous_in_order);
+        node->previous_in_order->checksum = checksum;
+    }
+
+    uint64_t checksum = HeapArenaGetNodeChecksum(node);
+    node->checksum = checksum;
 
     arena->free_size -= node->size;
     return node;
 }
 
-inline void HeapArenaSeparateExtraMemory(HeapArena *arena, AllocationNode *node) {
-    int64_t free_size = node->size - node->used_size - sizeof(AllocationNode);
+static inline AllocationNode *HeapArenaSeparateExtraMemory(HeapArena *arena, AllocationNode *node) {
+    uint64_t target_checksum = HeapArenaGetNodeChecksum(node);
+    uint64_t test_checksum   = HeapArenaGetNodeChecksum(node);
+    assert(node->checksum == target_checksum && "Corrupted memory");
+
+    int64_t free_size = node->size - node->used_size - (int64_t)sizeof(AllocationNode);
     if (free_size <= 0) {
-        return;
+        return 0;
     }
 
     uint8_t *memory = SkipAllocationNode(node);
@@ -798,6 +845,18 @@ inline void HeapArenaSeparateExtraMemory(HeapArena *arena, AllocationNode *node)
 
     arena->root = RBT_AddNode(arena->root, next);
     arena->free_size += free_size;
+
+    uint64_t node_checksum = HeapArenaGetNodeChecksum(node);
+    node->checksum = node_checksum;
+    uint64_t next_checksum = HeapArenaGetNodeChecksum(next);
+    next->checksum = next_checksum;
+
+    if (next->next_in_order) {
+        uint64_t next_next_checksum = HeapArenaGetNodeChecksum(next->next_in_order);
+        next->next_in_order->checksum = next_next_checksum;
+    }
+
+    return next;
 }
 
 void *HeapArenaAllocate(HeapArena *arena, int64_t size) {
@@ -812,22 +871,31 @@ void *HeapArenaAllocate(HeapArena *arena, int64_t size) {
         arena->last_node  = arena->root;
     }     
 
-    AllocationNode *node = HeapArenaGetNode(arena, size);
+    AllocationNode *node  = HeapArenaGetNode(arena, size);
     HeapArenaSeparateExtraMemory(arena, node); 
-    void *res = SkipAllocationNode(node);
 
+    void *res = SkipAllocationNode(node);
     return res;
 }
 
 void HeapArenaFree(HeapArena *arena, void *memory) {
     AllocationNode *info = GetAllocationNode(memory);
+    uint64_t target_info_checksum = HeapArenaGetNodeChecksum(info);
+    assert(info->checksum == target_info_checksum && "corrupted memory");
+
     info->occupied = false;
     info->used_size = 0;
     arena->free_size += info->size;
 
     AllocationNode *next = info->next_in_order;
     if (next && !next->occupied && (next->memory_block == info->memory_block)) {
+        uint64_t target_next_checksum = HeapArenaGetNodeChecksum(next);
+        assert(next->checksum == target_next_checksum && "corrupted memory");
         assert(next->previous_in_order == info);
+
+        arena->root = RBT_RemoveSize(arena->root, next);
+        RBT_ResetNode(next); 
+
         arena->free_size += sizeof(AllocationNode);
         info->size = info->size + sizeof(AllocationNode) + next->size;
         info->next_in_order = next->next_in_order;
@@ -837,32 +905,82 @@ void HeapArenaFree(HeapArena *arena, void *memory) {
             assert(arena->last_node == next);
             arena->last_node = info;
         }
-        arena->root = RBT_RemoveSize(arena->root, next);
-        RBT_ResetNode(next);
     } 
+
+    /* 
+    It is stupid how many time I've this mistake...
+
+    I can't just add size of the 'previous' node to 'current' node, because of how they are ordered in memory:  
+
+    |      | |      | |      |
+    ^        ^        ^
+    previous node     next
+    
+    (free space between nodes in the diagram is decorative, these nodes are actually contiguous in memory)
+    
+    Lets say that we change node.size to be previous.size + node.size, now we have a buffer overrun:
+            
+             node + previous
+             v
+             |         xxxxxx| < overlapping memory
+
+    |      | |      | |      |
+    ^        ^        ^
+    previous node     next
+
+    It happens because memory that we are claiming to have is actually located before us, in the previous node. Obviously, to fix this we just need to go back one node, so we start at the previous one:
+
+    previous + node
+    v
+    |                         |
+     
+    |      |           |      |  |      | 
+    ^                  ^         ^ 
+    node(old previous) old node  next
+    */
 
     AllocationNode *previous = info->previous_in_order;
     if (previous && !previous->occupied && (previous->memory_block == info->memory_block)) {
+        uint64_t target_previous_checksum = HeapArenaGetNodeChecksum(previous);
+        assert(previous->checksum == target_previous_checksum && "corrupted memory");
         assert(previous->next_in_order == info);
-        arena->free_size += sizeof(AllocationNode);
-        previous->size = previous->size + sizeof(AllocationNode) + info->size;
-        previous->next_in_order = info->next_in_order;
-        if (previous->next_in_order) {
-            previous->next_in_order->previous_in_order = previous;
-        } else {
-            assert(arena->last_node == info);
-            arena->last_node = previous;
-        }
+
         arena->root = RBT_RemoveSize(arena->root, previous);
         RBT_ResetNode(previous);
+       
+        next = info;
         info = previous;
+
+        arena->free_size += sizeof(AllocationNode);
+        info->size = info->size + sizeof(AllocationNode) + next->size;
+        info->next_in_order = next->next_in_order;
+        if (info->next_in_order) {
+            info->next_in_order->previous_in_order = info;
+        } else {
+            assert(arena->last_node == next);
+            arena->last_node = info;
+        }
     } 
 
     arena->root = RBT_AddNode(arena->root, info);
+
+    if (info->next_in_order) {
+        uint64_t new_next_checksum = HeapArenaGetNodeChecksum(info->next_in_order);
+        info->next_in_order->checksum = new_next_checksum;
+    }
+
+    if (info->previous_in_order) {
+        uint64_t new_previous_checksum = HeapArenaGetNodeChecksum(info->previous_in_order);
+        info->previous_in_order->checksum = new_previous_checksum;
+    }
+
+    uint64_t new_info_checksum = HeapArenaGetNodeChecksum(info);
+    info->checksum = new_info_checksum;
 }
 
 // Note: from what i've seen, this function is not vectorized by the compiler
 void HeapArenaCopyMemory(void *dest, void *source, int64_t size) {
+#if 0
     int64_t start = 0;
     int64_t end  =  size;
     int64_t step = 1;
@@ -877,12 +995,20 @@ void HeapArenaCopyMemory(void *dest, void *source, int64_t size) {
     for (int64_t i=start; i != end; i+=step) {
         to[i] = from[i]; 
     }
+#else
+    memmove(dest, source, size);
+    return;
+#endif
 }
 
+/* Performance: make seperate path in the case when next node is free and just use its memory, without juggling other functions */
 void *HeapArenaRealloc(HeapArena *arena, void *memory, int64_t new_size) {
     assert(arena->first_block && "Nothing is allocated yet");
 
-    AllocationNode *node = GetAllocationNode(memory);
+    AllocationNode *node = GetAllocationNode(memory); 
+    uint64_t target_checksum = HeapArenaGetNodeChecksum(node);
+    assert(target_checksum == node->checksum && "corrupted memory"); 
+
     int64_t old_size = node->used_size;
 
     if (old_size == new_size) {
@@ -923,7 +1049,7 @@ void HeapArenaDump(HeapArena *arena) {
     PRINT("Nodes(%lld):\n", node_count);
     node = arena->first_node;
     while(node) {
-        PRINT("\tNode(size=%lld, occupied=%d, ptr=%p)\n", node->size, node->occupied, node); 
+        PRINT("\tNode(size=%lld, occupied=%d, checksum=%llu, ptr=%p)\n", node->size, node->occupied, node->checksum, node); 
         node = node->next_in_order;
     }
 
@@ -948,7 +1074,7 @@ void HeapArenaRelease(HeapArena *arena) {
 #endif
 #define STATIC_ARENA_PAGE_AVAILABLE_SIZE (STATIC_ARENA_PAGE_TOTAL_SIZE - sizeof(uint8_t*))
 static_assert(
-    STATIC_ARENA_PAGE_AVAILABLE_SIZE, 
+    STATIC_ARENA_PAGE_AVAILABLE_SIZE > 0, 
     "Specified STATIC_ARENA_PAGE_TOTAL_SIZE is too small, expected at least size of a pointer"
 );
 
@@ -990,7 +1116,7 @@ void StaticArenaNextPage(StaticArena *arena) {
     arena->last = new_page;
 }
 
-bool StaticArenaZeroed(StaticArena *arena) {
+bool StaticArenaIsZeroed(StaticArena *arena) {
     StaticArena zeroed = {0};
     int32_t res = memcmp(&zeroed, arena, sizeof(StaticArena));
     if (res != 0) {
@@ -1000,7 +1126,7 @@ bool StaticArenaZeroed(StaticArena *arena) {
 }
 
 void *StaticArenaAlloc(StaticArena *arena, int64_t size) {
-    bool zeroed = StaticArenaZeroed(arena);
+    bool zeroed = StaticArenaIsZeroed(arena);
     if (zeroed) {  
         arena->first = StaticArenaNewPage();
         arena->last = arena->first;

@@ -1,10 +1,11 @@
 #define EPOCH_COUNT 0
-#define PRINT_STEPS FALSE
-#define NORMAL_ALLOCATION_SIZE 1024*1024*10
-#define MAX_AMOUNT_TO_ALLOCATE 1234
-#define ALLOCATION_COUNT       10000
-#define CHANCE_TO_REALLOCATE     25
-#define CHANCE_TO_DEALLOCATE     25
+#define PRINT_STEPS             FALSE
+#define ENABLE_INTEGRITY_CHECKS TRUE
+#define NORMAL_ALLOCATION_SIZE  1024
+#define MAX_AMOUNT_TO_ALLOCATE  1024*100
+#define ALLOCATION_COUNT        1024*5
+#define CHANCE_TO_REALLOCATE    10
+#define CHANCE_TO_DEALLOCATE    10
 
 #include "stdlib.h"
 #include "assert.h"
@@ -25,6 +26,29 @@ void PlatformFreeMemory(void *memory) {
     VirtualFree(memory, 0, MEM_RELEASE);
 }
 
+uint64_t HighResolutionClockFrequency() {
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq); 
+    return freq.QuadPart;
+}
+
+uint64_t GetHighResolutionClock() {
+    LARGE_INTEGER counter;
+    QueryPerformanceCounter(&counter); 
+    return counter.QuadPart;
+}
+
+double HighResolutionClockDiff(uint64_t start, uint64_t end) {
+    double diff = (float)(end - start);
+
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq); 
+
+    double res = diff / (float)freq.QuadPart;
+    return res;
+}
+
+
 int64_t random_i64(int64_t min, int64_t max) {
     assert(min <= max);
     int64_t res = min + rand() % (max - min + 1);
@@ -37,12 +61,14 @@ uint8_t random_byte(uint8_t min, uint8_t max) {
     return res;
 }
 
-void random_fill(uint8_t *first_buffer, uint8_t *second_buffer, int64_t size) {
+void maybe_random_fill(uint8_t *first_buffer, uint8_t *second_buffer, int64_t size) {
+#if ENABLE_INTEGRITY_CHECKS
     for (int64_t byte_index=0;byte_index<size;++byte_index) {
         uint8_t byte = random_byte(0, 255);
         first_buffer[byte_index]  = byte;
         second_buffer[byte_index] = byte;
     }
+#endif
 }
 
 int64_t GetBlackNodesCountOfTheFirstLeaf(AllocationNode *root) {
@@ -121,6 +147,7 @@ bool TestNodeIntegrity(AllocationNode *node, int64_t black_nodes_count, int64_t 
 }
 
 void TestRBTIntegrity(AllocationNode *root) {
+#if ENABLE_INTEGRITY_CHECKS
     if (!root) {
         return;
     } 
@@ -128,9 +155,11 @@ void TestRBTIntegrity(AllocationNode *root) {
     int64_t target = GetBlackNodesCountOfTheFirstLeaf(root);
     bool res = TestNodeIntegrity(root, 0, target);
     assert(res && "Red-Black tree integrity test failed");
+#endif
 }
 
 void TestAllocatorIntegrity(HeapArena *arena, int64_t allocated_size) {
+#if ENABLE_INTEGRITY_CHECKS
     int64_t remaining_size = allocated_size;
 
     // memory blocks
@@ -154,6 +183,9 @@ void TestAllocatorIntegrity(HeapArena *arena, int64_t allocated_size) {
                 remaining_size -= node->used_size;
             }
             if (!node->next_in_order || node->next_in_order->memory_block != block) {
+                if (ll_node->next_in_order) {
+                    ll_node = ll_node->next_in_order;
+                }
                 break;
             }
             
@@ -179,6 +211,7 @@ void TestAllocatorIntegrity(HeapArena *arena, int64_t allocated_size) {
     }
 
     assert(remaining_size == 0 && "Invalid allocated size");
+#endif
 }
 
 typedef struct Memory Memory;
@@ -197,6 +230,7 @@ void maybe_printf(char *format, ...) {
 }
 
 void CheckMemory(Memory *memory_array, Memory *reference_array, int64_t count) {
+#if ENABLE_INTEGRITY_CHECKS
     for (int64_t i=0;i<count;++i) {
         Memory memory   = memory_array[i]; 
         Memory reference = reference_array[i];
@@ -211,6 +245,7 @@ void CheckMemory(Memory *memory_array, Memory *reference_array, int64_t count) {
             }
         }
     }
+#endif
 }
 
 int main() {
@@ -228,8 +263,13 @@ int main() {
 #endif
     int64_t memory_index = 0;
 
-    clock_t our_clocks = 0;
-    clock_t malloc_clocks = 0;
+    uint64_t epoch_start = GetHighResolutionClock();
+    double our_alloc_time = 0;
+    double our_realloc_time = 0;
+    double our_free_time = 0;
+    double std_alloc_time = 0;
+    double std_realloc_time = 0;
+    double std_free_time = 0;
     int64_t epoch_allocated_size = 0;
     for (int64_t i=0; i<ALLOCATION_COUNT; ++i) {
         int64_t to_allocate = random_i64(0, MAX_AMOUNT_TO_ALLOCATE);
@@ -237,15 +277,21 @@ int main() {
 
         maybe_printf("Iteration(%lld), allocating %lld\n", i, to_allocate);
 
-        clock_t start = clock(); 
-        void *our_memory = HeapArenaAllocate(&arena, to_allocate);
-        our_clocks += (clock() - start);
 
-        start = clock();
+        uint64_t start = GetHighResolutionClock(); 
         void *malloc_memory = malloc(to_allocate);
-        malloc_clocks += (clock() - start);
+        uint64_t end = GetHighResolutionClock();
+        double time_diff = HighResolutionClockDiff(start, end);
+        std_alloc_time += time_diff;
 
-        random_fill(our_memory, malloc_memory, to_allocate);
+        start = GetHighResolutionClock(); 
+        void *our_memory = HeapArenaAllocate(&arena, to_allocate);
+        end = GetHighResolutionClock();
+        time_diff = HighResolutionClockDiff(start, end);
+        our_alloc_time += time_diff;
+
+
+        maybe_random_fill(our_memory, malloc_memory, to_allocate);
 #if PRINT_STEPS
         maybe_printf("Iteration(%lld), memory %p\n", i, our_memory);
         HeapArenaDump(&arena);
@@ -273,9 +319,21 @@ int main() {
             int64_t size_diff = new_size - old_size;
             epoch_allocated_size += size_diff;
             maybe_printf("Iteration(%lld), reallocating(%p) from %lld to %lld bytes\n", i, GetAllocationNode(our_memory_to_extend.ptr), old_size, new_size);
+ 
 
-            void *new_ptr = HeapArenaRealloc(&arena, our_memory_to_extend.ptr, new_size);
+            start = GetHighResolutionClock();
             void *new_malloc_memory = realloc(malloc_memory_to_extend.ptr, new_size);
+            end = GetHighResolutionClock();
+            time_diff = HighResolutionClockDiff(start, end);
+            std_realloc_time += time_diff;
+
+            start = GetHighResolutionClock();
+            void *new_ptr = HeapArenaRealloc(&arena, our_memory_to_extend.ptr, new_size);
+            end = GetHighResolutionClock();
+            time_diff = HighResolutionClockDiff(start, end);
+            our_realloc_time += time_diff;
+
+
             maybe_printf("\tOld address(%p), New address(%p)\n", GetAllocationNode(our_memory_to_extend.ptr), GetAllocationNode(new_ptr));
 
             // note: first we check that old contents are preserved, and ony then refill memory
@@ -286,7 +344,7 @@ int main() {
 
             our_memory_list[index_to_extend] = (Memory){new_ptr, new_size};
             malloc_memory_list[index_to_extend] = (Memory){new_malloc_memory, new_size};
-            random_fill(new_ptr, new_malloc_memory, new_size);
+            maybe_random_fill(new_ptr, new_malloc_memory, new_size);
             CheckMemory(our_memory_list, malloc_memory_list, memory_index);
             TestAllocatorIntegrity(&arena, epoch_allocated_size); 
             TestRBTIntegrity(arena.root);
@@ -303,9 +361,19 @@ int main() {
             epoch_allocated_size -= memory_to_free.size;
 
             maybe_printf("Iteration(%lld), deallocating(%p)\n", i, GetAllocationNode(memory_to_free.ptr));
-            HeapArenaFree(&arena, memory_to_free.ptr);
+
+            start = GetHighResolutionClock();
             free(malloc_to_free.ptr);
-            
+            end = GetHighResolutionClock();
+            time_diff = HighResolutionClockDiff(start, end);
+            std_free_time += time_diff;
+
+            start = GetHighResolutionClock();
+            HeapArenaFree(&arena, memory_to_free.ptr);
+            end = GetHighResolutionClock();
+            time_diff = HighResolutionClockDiff(start, end);
+            our_free_time += time_diff;
+
             our_memory_list[index_to_free] = our_memory_list[memory_index-1];
             our_memory_list[memory_index-1] = (Memory){0};
             malloc_memory_list[index_to_free] = malloc_memory_list[memory_index-1];
@@ -321,13 +389,8 @@ int main() {
 #endif
         }
     }
-   
-    printf("-------Epoch %lld is finished-------\n", epoch);
-    printf("Our Time: %lf seconds\n", (float)our_clocks/(float)CLOCKS_PER_SEC);
-    printf("Malloc Time: %lf seconds\n", (float)malloc_clocks/(float)CLOCKS_PER_SEC);
-    printf("Arena: Allocated size: %lld\n", arena.allocated_size);
-    printf("Arena: Free size: %lld\n", arena.free_size);
-    printf("Epoch: Allocted size: %lld\n", epoch_allocated_size);
+  
+    uint64_t cleanup_start = GetHighResolutionClock();
 
     HeapArenaRelease(&arena);
     for (int64_t index=0;index<memory_index;++index) {
@@ -335,6 +398,32 @@ int main() {
         free(mem.ptr);
     }
 
+    uint64_t cleanup_end = GetHighResolutionClock();
+    float cleanup_time = HighResolutionClockDiff(cleanup_start, cleanup_end);
+
+    uint64_t freq      = HighResolutionClockFrequency();
+    uint64_t epoch_end = GetHighResolutionClock();
+    float epoch_time = HighResolutionClockDiff(epoch_start, epoch_end);
+
+    printf("-------Epoch %lld is finished-------\n", epoch);
+    printf("Total   time: %lf second\n", epoch_time);
+    printf("Cleanup time: %lf second\n", cleanup_time);
+    printf("\n");
+    printf("Our Time: %lf seconds\n", our_alloc_time + our_realloc_time + our_free_time);
+    printf("    Alloc   Time: %lf seconds\n", our_alloc_time);
+    printf("    Realloc Time: %lf seconds\n", our_realloc_time);
+    printf("    Free    Time: %lf seconds\n", our_free_time);
+    printf("\n");
+    printf("Std Time: %lf seconds\n", std_alloc_time + std_realloc_time + std_free_time);
+    printf("    Alloc   Time: %lf seconds\n", std_alloc_time);
+    printf("    Realloc Time: %lf seconds\n", std_realloc_time);
+    printf("    Free    Time: %lf seconds\n", std_free_time);
+    printf("\n");
+    printf("Arena: Allocated size: %lld\n", arena.allocated_size);
+    printf("Arena: Free size: %lld\n", arena.free_size);
+    printf("Epoch: Allocted size: %lld\n", epoch_allocated_size);
+
     epoch += 1;
+
     }
 }
