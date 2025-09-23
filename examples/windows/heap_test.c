@@ -4,8 +4,8 @@
 #define NORMAL_ALLOCATION_SIZE  1024*1024*10
 #define MAX_AMOUNT_TO_ALLOCATE  1024
 #define ALLOCATION_COUNT        1024*1024*2
-#define CHANCE_TO_REALLOCATE    10
-#define CHANCE_TO_DEALLOCATE    10
+#define CHANCE_TO_REALLOCATE    25
+#define CHANCE_TO_DEALLOCATE    25
 
 #include "stdlib.h"
 #include "assert.h"
