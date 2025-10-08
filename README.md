@@ -13,5 +13,5 @@ Features in progress:
 - tools for memory profiling
 - built-in gpa integrity validation
 - pool and debug allocators
-- 
+  
 For a quick start, see 'examples'
