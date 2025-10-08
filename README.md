@@ -1,5 +1,5 @@
 # Allocators
-> [!TOO EARLY]
+> [!WARNING]
 > Right now this repo is merely a proof of concept, nothing more. All the features are yet to come.
 
 Stb-style header-only library providing useful allocators:
